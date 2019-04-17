@@ -64,7 +64,7 @@ namespace sbpl_recovery
 
     private:
       void planCB(const nav_msgs::Path::ConstPtr& plan);
-      double sqDistance(const geometry_msgs::PoseStamped& p1, 
+      double sqDistance(const geometry_msgs::PoseStamped& p1,
           const geometry_msgs::PoseStamped& p2);
       std::vector<geometry_msgs::PoseStamped> makePlan();
 
@@ -73,6 +73,7 @@ namespace sbpl_recovery
       tf::TransformListener* tf_;
       sbpl_lattice_planner::SBPLLatticePlanner global_planner_;
       pose_follower::PoseFollower local_planner_;
+      base_local_planner::TrajectoryPlannerROS collision_planner_;
       bool initialized_;
       ros::Subscriber plan_sub_;
       ros::Publisher vel_pub_;
@@ -81,6 +82,7 @@ namespace sbpl_recovery
       double control_frequency_, sq_planning_distance_, controller_patience_;
       int planning_attempts_, attempts_per_run_;
       bool use_local_frame_;
+      bool use_pose_follower_;
   };
 
 };

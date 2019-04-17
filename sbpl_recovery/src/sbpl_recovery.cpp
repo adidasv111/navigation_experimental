@@ -36,7 +36,7 @@
  *********************************************************************/
 
 #include <sbpl_recovery/sbpl_recovery.h>
-#include <pluginlib/class_list_macros.hpp>
+#include <pluginlib/class_list_macros.h>
 
 PLUGINLIB_EXPORT_CLASS(sbpl_recovery::SBPLRecovery, nav_core::RecoveryBehavior)
 
@@ -57,6 +57,8 @@ namespace sbpl_recovery
     ros::NodeHandle nh = ros::NodeHandle();
     ros::NodeHandle p_nh = ros::NodeHandle("~/" + n);
 
+    ROS_INFO("SBPLRecovery: Name is %s", n.c_str());
+
     std::string plan_topic;
     p_nh.param("plan_topic", plan_topic, std::string("NavfnROS/plan"));
     p_nh.param("control_frequency", control_frequency_, 10.0);
@@ -64,10 +66,20 @@ namespace sbpl_recovery
     p_nh.param("planning_attempts", planning_attempts_, 3);
     p_nh.param("attempts_per_run", attempts_per_run_, 3);
     p_nh.param("use_local_frame", use_local_frame_, true);
+    p_nh.param("use_pose_follower", use_pose_follower_, true);
+
+  ROS_INFO_STREAM("plan_topic: --" << plan_topic << "--.");
+  ROS_INFO_STREAM("control_frequency_: --" << control_frequency_ << "--.");
+  ROS_INFO_STREAM("controller_patience_: --" << controller_patience_ << "--.");
+  ROS_INFO_STREAM("planning_attempts_: --" << planning_attempts_ << "--.");
+  ROS_INFO_STREAM("attempts_per_run_: --" << attempts_per_run_ << "--.");
+  ROS_INFO_STREAM("use_local_frame_: --" << use_local_frame_ << "--.");
+  ROS_INFO_STREAM("use_pose_follower_: --" << use_pose_follower_ << "--.");
 
     double planning_distance;
     p_nh.param("planning_distance", planning_distance, 2.0);
     sq_planning_distance_ = planning_distance * planning_distance;
+  ROS_INFO_STREAM("planning_distance: --" << planning_distance << "--.");
 
     //we need to initialize our costmaps
     global_costmap_ = global_costmap;
@@ -80,9 +92,19 @@ namespace sbpl_recovery
     else
       global_planner_.initialize(n + "/sbpl_lattice_planner", global_costmap_);
 
-    local_planner_.initialize(n + "/pose_follower", tf, local_costmap_);
 
-    //we'll need to subscribe to get the latest plan information 
+    if (use_pose_follower_)
+    {
+      ROS_INFO_STREAM("----sbpl_recover: create pose_follower:");
+      local_planner_.initialize(n + "/pose_follower", tf, local_costmap_);
+    }
+    else
+    {
+      ROS_INFO_STREAM("----sbpl_recover: create collision planner:");
+      collision_planner_.initialize(n + "/collision_planner", tf, local_costmap_);
+    }
+
+    //we'll need to subscribe to get the latest plan information
     vel_pub_ = nh.advertise<geometry_msgs::Twist>("cmd_vel", 1);
 
     ros::NodeHandle node_nh("~/");
@@ -120,7 +142,7 @@ namespace sbpl_recovery
     }
   }
 
-  double SBPLRecovery::sqDistance(const geometry_msgs::PoseStamped& p1, 
+  double SBPLRecovery::sqDistance(const geometry_msgs::PoseStamped& p1,
       const geometry_msgs::PoseStamped& p2)
   {
     return (p1.pose.position.x - p2.pose.position.x) * (p1.pose.position.x - p2.pose.position.x) +
@@ -218,27 +240,52 @@ namespace sbpl_recovery
       }
 
       //ok... now we've got a plan so we need to try to follow it
-      local_planner_.setPlan(sbpl_plan);
-      ros::Rate r(control_frequency_);
-      ros::Time last_valid_control = ros::Time::now();
-      while(ros::ok() && 
-          last_valid_control + ros::Duration(controller_patience_) >= ros::Time::now() && 
-          !local_planner_.isGoalReached())
+      if (use_pose_follower_)
       {
-        geometry_msgs::Twist cmd_vel;
-        bool valid_control = local_planner_.computeVelocityCommands(cmd_vel);
+        local_planner_.setPlan(sbpl_plan);
 
-        if(valid_control)
-          last_valid_control = ros::Time::now();
+        ros::Rate r(control_frequency_);
+        ros::Time last_valid_control = ros::Time::now();
+        while (ros::ok() && last_valid_control + ros::Duration(controller_patience_) >= ros::Time::now() && !local_planner_.isGoalReached())
+        {
+          geometry_msgs::Twist cmd_vel;
+          bool valid_control = local_planner_.computeVelocityCommands(cmd_vel);
 
-        vel_pub_.publish(cmd_vel);
-        r.sleep();
+          if (valid_control)
+            last_valid_control = ros::Time::now();
+
+          vel_pub_.publish(cmd_vel);
+          r.sleep();
+        }
+
+        if (local_planner_.isGoalReached())
+          ROS_INFO("The sbpl recovery behavior made it to its desired goal");
+        else
+          ROS_WARN("The sbpl recovery behavior failed to make it to its desired goal");
       }
-
-      if(local_planner_.isGoalReached())
-        ROS_INFO("The sbpl recovery behavior made it to its desired goal");
       else
-        ROS_WARN("The sbpl recovery behavior failed to make it to its desired goal");
+      {
+        collision_planner_.setPlan(sbpl_plan);
+
+        ros::Rate r(control_frequency_);
+        ros::Time last_valid_control = ros::Time::now();
+        while (ros::ok() && last_valid_control + ros::Duration(controller_patience_) >= ros::Time::now() && !collision_planner_.isGoalReached())
+        {
+          geometry_msgs::Twist cmd_vel;
+          bool valid_control = collision_planner_.computeVelocityCommands(cmd_vel);
+
+          if (valid_control)
+            last_valid_control = ros::Time::now();
+
+          vel_pub_.publish(cmd_vel);
+          r.sleep();
+        }
+
+        if(collision_planner_.isGoalReached())
+          ROS_INFO("The sbpl recovery behavior made it to its desired goal");
+        else
+          ROS_WARN("The sbpl recovery behavior failed to make it to its desired goal");
+      }
     }
   }
 };
