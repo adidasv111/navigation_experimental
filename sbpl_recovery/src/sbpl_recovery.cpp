@@ -46,7 +46,8 @@ namespace sbpl_recovery
     global_costmap_(NULL),
     local_costmap_(NULL),
     tf_(NULL),
-    initialized_(false)
+    initialized_(false),
+    bgp_loader_("nav_core", "nav_core::BaseGlobalPlanner")
   {
   }
 
@@ -67,6 +68,7 @@ namespace sbpl_recovery
     p_nh.param("attempts_per_run", attempts_per_run_, 3);
     p_nh.param("use_local_frame", use_local_frame_, true);
     p_nh.param("use_pose_follower", use_pose_follower_, true);
+    p_nh.param("use_sbpl_planner", use_sbpl_planner_, true);
 
   ROS_INFO_STREAM("plan_topic: --" << plan_topic << "--.");
   ROS_INFO_STREAM("control_frequency_: --" << control_frequency_ << "--.");
@@ -75,6 +77,7 @@ namespace sbpl_recovery
   ROS_INFO_STREAM("attempts_per_run_: --" << attempts_per_run_ << "--.");
   ROS_INFO_STREAM("use_local_frame_: --" << use_local_frame_ << "--.");
   ROS_INFO_STREAM("use_pose_follower_: --" << use_pose_follower_ << "--.");
+  ROS_INFO_STREAM("use_sbpl_planner: --" << use_sbpl_planner_ << "--.");
 
     double planning_distance;
     p_nh.param("planning_distance", planning_distance, 2.0);
@@ -86,12 +89,40 @@ namespace sbpl_recovery
     local_costmap_ = local_costmap;
     tf_ = tf;
 
-    //we need to initialize our local and global planners
-    if(use_local_frame_)
-      global_planner_.initialize(n + "/sbpl_lattice_planner", local_costmap_);
-    else
-      global_planner_.initialize(n + "/sbpl_lattice_planner", global_costmap_);
+    std::string planner_type;
+    std::string planner_name;
 
+    if(use_sbpl_planner_)
+    {
+      planner_type = "sbpl_lattice_planner::SBPLLatticePlanner";
+      planner_name = n + "/sbpl_lattice_planner";
+    }
+    else
+    {
+      planner_type = "nav_core_adapter::GlobalPlannerAdapter";
+      planner_name = n + "GlobalPlannerAdapter";
+    }
+
+    // //we need to initialize our local and global planners
+    // if(use_local_frame_)
+    //   global_planner_.initialize(n + "/sbpl_lattice_planner", local_costmap_);
+    // else
+    //   global_planner_.initialize(n + "/sbpl_lattice_planner", global_costmap_);
+
+    //initialize the global planner
+    try {
+      planner_ = bgp_loader_.createInstance(planner_type);
+
+      if(use_local_frame_)
+        planner_->initialize(planner_name, local_costmap_);
+      else
+        planner_->initialize(planner_name, global_costmap_);
+    }
+    catch (const pluginlib::PluginlibException& ex)
+    {
+      ROS_FATAL_STREAM("Failed to create the planner " << planner_name << ". Exception: " << ex.what());
+      exit(1);
+    }
 
     if (use_pose_follower_)
     {
@@ -200,9 +231,13 @@ namespace sbpl_recovery
       {
         ROS_INFO("Calling sbpl planner with start (%.2f, %.2f), goal (%.2f, %.2f)",
             start.pose.position.x, start.pose.position.y,
-            plan_.poses[i].pose.position.x,
-            plan_.poses[i].pose.position.y);
-        if(global_planner_.makePlan(start, plan_.poses[i], sbpl_plan) && !sbpl_plan.empty())
+            // plan_.poses[i].pose.position.x,
+            // plan_.poses[i].pose.position.y);
+            plan_.poses.back().pose.position.x,
+            plan_.poses.back().pose.position.y);
+
+        // if(global_planner_.makePlan(start, plan_.poses[i], sbpl_plan) && !sbpl_plan.empty())
+        if(planner_->makePlan(start, plan_.poses.back(), sbpl_plan) && !sbpl_plan.empty())
         {
           ROS_INFO("Got a valid plan");
           return sbpl_plan;

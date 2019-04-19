@@ -46,6 +46,8 @@
 #include <nav_msgs/Path.h>
 #include <boost/thread.hpp>
 #include <base_local_planner/goal_functions.h>
+#include <pluginlib/class_loader.h>
+
 
 namespace sbpl_recovery
 {
@@ -73,7 +75,12 @@ namespace sbpl_recovery
       tf::TransformListener* tf_;
       sbpl_lattice_planner::SBPLLatticePlanner global_planner_;
       pose_follower::PoseFollower local_planner_;
+
+      boost::shared_ptr<nav_core::BaseGlobalPlanner> planner_;
+      pluginlib::ClassLoader<nav_core::BaseGlobalPlanner> bgp_loader_;
+
       base_local_planner::TrajectoryPlannerROS collision_planner_;
+
       bool initialized_;
       ros::Subscriber plan_sub_;
       ros::Publisher vel_pub_;
@@ -83,6 +90,7 @@ namespace sbpl_recovery
       int planning_attempts_, attempts_per_run_;
       bool use_local_frame_;
       bool use_pose_follower_;
+      bool use_sbpl_planner_;
   };
 
 };
