@@ -72,6 +72,7 @@ namespace sbpl_recovery
 
       costmap_2d::Costmap2DROS* global_costmap_;
       costmap_2d::Costmap2DROS* local_costmap_;
+      costmap_2d::Costmap2DROS* recovery_costmap_;
       tf::TransformListener* tf_;
       sbpl_lattice_planner::SBPLLatticePlanner global_planner_;
       pose_follower::PoseFollower local_planner_;
@@ -89,6 +90,7 @@ namespace sbpl_recovery
       double control_frequency_, sq_planning_distance_, controller_patience_;
       int planning_attempts_, attempts_per_run_;
       bool use_local_frame_;
+      bool use_recovery_costmap_;
       bool use_pose_follower_;
       bool use_sbpl_planner_;
   };

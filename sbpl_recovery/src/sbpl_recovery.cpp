@@ -45,6 +45,7 @@ namespace sbpl_recovery
   SBPLRecovery::SBPLRecovery():
     global_costmap_(NULL),
     local_costmap_(NULL),
+    recovery_costmap_(NULL),
     tf_(NULL),
     initialized_(false),
     bgp_loader_("nav_core", "nav_core::BaseGlobalPlanner")
@@ -69,6 +70,7 @@ namespace sbpl_recovery
     p_nh.param("use_local_frame", use_local_frame_, true);
     p_nh.param("use_pose_follower", use_pose_follower_, true);
     p_nh.param("use_sbpl_planner", use_sbpl_planner_, true);
+    p_nh.param("use_recovery_costmap", use_recovery_costmap_, false);
 
   ROS_INFO_STREAM("plan_topic: --" << plan_topic << "--.");
   ROS_INFO_STREAM("control_frequency_: --" << control_frequency_ << "--.");
@@ -78,16 +80,28 @@ namespace sbpl_recovery
   ROS_INFO_STREAM("use_local_frame_: --" << use_local_frame_ << "--.");
   ROS_INFO_STREAM("use_pose_follower_: --" << use_pose_follower_ << "--.");
   ROS_INFO_STREAM("use_sbpl_planner: --" << use_sbpl_planner_ << "--.");
+  ROS_INFO_STREAM("use_recovery_costmap_: --" << use_recovery_costmap_ << "--.");
 
     double planning_distance;
     p_nh.param("planning_distance", planning_distance, 2.0);
     sq_planning_distance_ = planning_distance * planning_distance;
   ROS_INFO_STREAM("planning_distance: --" << planning_distance << "--.");
 
+
     //we need to initialize our costmaps
     global_costmap_ = global_costmap;
     local_costmap_ = local_costmap;
     tf_ = tf;
+
+    // initialize the extended global costmap
+    recovery_costmap_ = new costmap_2d::Costmap2DROS("recovery_costmap", *tf_);
+    recovery_costmap_->pause();
+
+    if (use_recovery_costmap_)
+    {
+      global_costmap_ = recovery_costmap_;
+      global_costmap_->start();
+    }
 
     std::string planner_type;
     std::string planner_name;
@@ -100,7 +114,7 @@ namespace sbpl_recovery
     else
     {
       planner_type = "nav_core_adapter::GlobalPlannerAdapter";
-      planner_name = n + "GlobalPlannerAdapter";
+      planner_name = n + "/GlobalPlannerAdapter";
     }
 
     // //we need to initialize our local and global planners
@@ -288,6 +302,8 @@ namespace sbpl_recovery
 
           if (valid_control)
             last_valid_control = ros::Time::now();
+
+          ROS_INFO_STREAM("sbpl recovery pose follower: pub cmd: " << cmd_vel.linear.x << " , "<< cmd_vel.linear.y << " , "<< cmd_vel.angular.z << " , ");
 
           vel_pub_.publish(cmd_vel);
           r.sleep();
