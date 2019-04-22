@@ -50,6 +50,7 @@ namespace sbpl_recovery
     initialized_(false),
     controller_(nullptr),
     planner_(nullptr),
+    replan_(true),
     bgp_loader_("nav_core", "nav_core::BaseGlobalPlanner")//,
     // blp_loader_("nav_core", "nav_core::BaseLocalPlanner")
   {
@@ -75,6 +76,16 @@ namespace sbpl_recovery
     p_nh.param("use_sbpl_planner", use_sbpl_planner_, true);
     p_nh.param("use_recovery_costmap", use_recovery_costmap_, false);
 
+    double planner_frequency;
+    p_nh.param("planner_frequency", planner_frequency, 1.0);
+    if (planner_frequency <= 0)
+      replan_ = false;
+    else
+    {
+      replan_ = true;
+      planner_period_ = 1.0/planner_frequency;
+    }
+
   ROS_INFO_STREAM("plan_topic: --" << plan_topic << "--.");
   ROS_INFO_STREAM("control_frequency_: --" << control_frequency_ << "--.");
   ROS_INFO_STREAM("controller_patience_: --" << controller_patience_ << "--.");
@@ -84,6 +95,7 @@ namespace sbpl_recovery
   ROS_INFO_STREAM("use_pose_follower_: --" << use_pose_follower_ << "--.");
   ROS_INFO_STREAM("use_sbpl_planner: --" << use_sbpl_planner_ << "--.");
   ROS_INFO_STREAM("use_recovery_costmap_: --" << use_recovery_costmap_ << "--.");
+  ROS_INFO_STREAM("planner_frequency: --" << planner_frequency << "--. period: --" << planner_period_ << "--.");
 
     double planning_distance;
     p_nh.param("planning_distance", planning_distance, 2.0);
@@ -258,12 +270,18 @@ namespace sbpl_recovery
     //first, we want to walk far enough along the path that we get to a point
     //that is within the recovery distance from the robot. Otherwise, we might
     //move backwards along the plan
+    // => go through the reference plan and find the first point withing planning distance from the robot,
+    // so if the robot already moved along the reference plan, we would not plan to points that are already behind the robot
     unsigned int index = 0;
     for(index=0; index < plan_.poses.size(); ++index)
     {
       if(sqDistance(start, plan_.poses[index]) < sq_planning_distance_)
         break;
     }
+
+    // if no starting point found, plan to the last reference point
+    if (index >= plan_.poses.size())
+      index = plan_.poses.size() - 1;
 
     //next, we want to find a goal point that is far enough away from the robot on the
     //original plan and attempt to plan to it
@@ -285,11 +303,21 @@ namespace sbpl_recovery
             plan_.poses.back().pose.position.x,
             plan_.poses.back().pose.position.y);
 
-        // if(global_planner_.makePlan(start, plan_.poses[i], sbpl_plan) && !sbpl_plan.empty())
-        if(planner_->makePlan(start, plan_.poses.back(), sbpl_plan) && !sbpl_plan.empty())
         {
-          ROS_INFO("Got a valid plan");
-          return sbpl_plan;
+          // we need to lock the map when we plan
+          boost::recursive_mutex* map_mutex;
+          if (use_local_frame_)
+            map_mutex = local_costmap_->getCostmap()->getMutex();
+          else
+            map_mutex = global_costmap_->getCostmap()->getMutex();
+
+          boost::unique_lock<costmap_2d::Costmap2D::mutex_t> lock(*(map_mutex));
+          // if(global_planner_.makePlan(start, plan_.poses[i], sbpl_plan) && !sbpl_plan.empty())
+          if (planner_->makePlan(start, plan_.poses.back(), sbpl_plan) && !sbpl_plan.empty())
+          {
+            ROS_INFO("Got a valid plan");
+            return sbpl_plan;
+          }
         }
         sbpl_plan.clear();
 
@@ -322,6 +350,7 @@ namespace sbpl_recovery
         ROS_ERROR("Unable to find a valid pose to plan to on the global plan.");
         return;
       }
+      ros::Time last_valid_plan = ros::Time::now();
 
       //ok... now we've got a plan so we need to try to follow it
       controller_->setPlan(sbpl_plan);
@@ -331,6 +360,16 @@ namespace sbpl_recovery
           last_valid_control + ros::Duration(controller_patience_) >= ros::Time::now() &&
           !controller_->isGoalReached())
       {
+        if (replan_ && (last_valid_plan + ros::Duration(planner_period_) < ros::Time::now()))
+        {
+          sbpl_plan = makePlan();
+          if (!sbpl_plan.empty())
+          {
+            controller_->setPlan(sbpl_plan);
+            last_valid_plan = ros::Time::now();
+          }
+        }
+
         geometry_msgs::Twist cmd_vel;
         bool valid_control = controller_->computeVelocityCommands(cmd_vel);
 
