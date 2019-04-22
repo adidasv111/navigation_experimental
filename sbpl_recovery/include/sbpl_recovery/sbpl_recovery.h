@@ -74,11 +74,15 @@ namespace sbpl_recovery
       costmap_2d::Costmap2DROS* local_costmap_;
       costmap_2d::Costmap2DROS* recovery_costmap_;
       tf::TransformListener* tf_;
+      // unused old planners
       sbpl_lattice_planner::SBPLLatticePlanner global_planner_;
       pose_follower::PoseFollower local_planner_;
 
-      boost::shared_ptr<nav_core::BaseGlobalPlanner> planner_;
       pluginlib::ClassLoader<nav_core::BaseGlobalPlanner> bgp_loader_;
+      boost::shared_ptr<nav_core::BaseGlobalPlanner> planner_;
+
+      // pluginlib::ClassLoader<nav_core::BaseLocalPlanner> blp_loader_;
+      boost::shared_ptr<nav_core::BaseLocalPlanner> controller_;
 
       base_local_planner::TrajectoryPlannerROS collision_planner_;
 
