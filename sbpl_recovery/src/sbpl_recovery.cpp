@@ -75,6 +75,18 @@ namespace sbpl_recovery
     p_nh.param("use_pose_follower", use_pose_follower_, true);
     p_nh.param("use_sbpl_planner", use_sbpl_planner_, true);
     p_nh.param("use_recovery_costmap", use_recovery_costmap_, false);
+    p_nh.param("prune_distance", prune_distance_, 0.4);
+    p_nh.param("abort_time", abort_time_, 30.0);
+
+    if (use_recovery_costmap_)
+    {
+      p_nh.param("clear_recovery_map", clear_recovery_map_, false);
+      if (clear_recovery_map_)
+      {
+        std::vector<std::string> clearable_layers_default = {"obstacle_layer", "inflation_layer"};
+        p_nh.param("clear_recovery_costmap_layers", clearable_layers_recovery_costmap_, clearable_layers_default);
+      }
+    }
 
     double planner_frequency;
     p_nh.param("planner_frequency", planner_frequency, 1.0);
@@ -96,6 +108,8 @@ namespace sbpl_recovery
   ROS_INFO_STREAM("use_sbpl_planner: --" << use_sbpl_planner_ << "--.");
   ROS_INFO_STREAM("use_recovery_costmap_: --" << use_recovery_costmap_ << "--.");
   ROS_INFO_STREAM("planner_frequency: --" << planner_frequency << "--. period: --" << planner_period_ << "--.");
+  ROS_INFO_STREAM("prune_distance_: --" << prune_distance_ << "--.");
+  ROS_INFO_STREAM("abort_time_: --" << abort_time_ << "--.");
 
     double planning_distance;
     p_nh.param("planning_distance", planning_distance, 2.0);
@@ -298,10 +312,10 @@ namespace sbpl_recovery
       {
         ROS_INFO("Calling sbpl planner with start (%.2f, %.2f), goal (%.2f, %.2f)",
             start.pose.position.x, start.pose.position.y,
-            // plan_.poses[i].pose.position.x,
-            // plan_.poses[i].pose.position.y);
-            plan_.poses.back().pose.position.x,
-            plan_.poses.back().pose.position.y);
+            plan_.poses[i].pose.position.x,
+            plan_.poses[i].pose.position.y);
+            // plan_.poses.back().pose.position.x,
+            // plan_.poses.back().pose.position.y);
 
         {
           // we need to lock the map when we plan
@@ -312,9 +326,10 @@ namespace sbpl_recovery
             map_mutex = global_costmap_->getCostmap()->getMutex();
 
           boost::unique_lock<costmap_2d::Costmap2D::mutex_t> lock(*(map_mutex));
-          // if(global_planner_.makePlan(start, plan_.poses[i], sbpl_plan) && !sbpl_plan.empty())
-          if (planner_->makePlan(start, plan_.poses.back(), sbpl_plan) && !sbpl_plan.empty())
+          if (planner_->makePlan(start, plan_.poses[i], sbpl_plan) && !sbpl_plan.empty())
+          // if (planner_->makePlan(start, plan_.poses.back(), sbpl_plan) && !sbpl_plan.empty())
           {
+            prunePlan(start, sbpl_plan);
             ROS_INFO("Got a valid plan");
             return sbpl_plan;
           }
@@ -341,8 +356,13 @@ namespace sbpl_recovery
 
     ROS_INFO("Starting the sbpl recovery behavior");
 
-    for(int i=0; i <= planning_attempts_; ++i)
+    clearCostmapLayers(recovery_costmap_,  clearable_layers_recovery_costmap_);
+
+    ros::Time start_time = ros::Time::now();
+
+    for(int i=0; i < planning_attempts_; ++i)
     {
+    ROS_INFO_STREAM("planning attempt " << i);
       std::vector<geometry_msgs::PoseStamped> sbpl_plan = makePlan();
 
       if(sbpl_plan.empty())
@@ -358,7 +378,8 @@ namespace sbpl_recovery
       ros::Time last_valid_control = ros::Time::now();
       while(ros::ok() &&
           last_valid_control + ros::Duration(controller_patience_) >= ros::Time::now() &&
-          !controller_->isGoalReached())
+          !controller_->isGoalReached() &&
+          start_time + ros::Duration(abort_time_) >= ros::Time::now())
       {
         if (replan_ && (last_valid_plan + ros::Duration(planner_period_) < ros::Time::now()))
         {
@@ -384,8 +405,48 @@ namespace sbpl_recovery
         ROS_INFO("The sbpl recovery behavior made it to its desired goal");
       else
         ROS_WARN("The sbpl recovery behavior failed to make it to its desired goal");
-
-
     }
+  }
+
+  void SBPLRecovery::clearCostmapLayers(costmap_2d::Costmap2DROS* costmap, std::vector<std::string> layer_to_clear)
+  {
+    std::vector<boost::shared_ptr<costmap_2d::Layer> >* plugins = costmap->getLayeredCostmap()->getPlugins();
+
+    for (std::vector<boost::shared_ptr<costmap_2d::Layer> >::iterator pluginp = plugins->begin(); pluginp != plugins->end(); ++pluginp)
+    {
+      boost::shared_ptr<costmap_2d::Layer> plugin = *pluginp;
+      std::string name = plugin->getName();
+      int slash = name.rfind('/');
+      if( slash != std::string::npos ){
+          name = name.substr(slash+1);
+      }
+
+      std::vector<std::string>::iterator it = find(layer_to_clear.begin(), layer_to_clear.end(), name);
+      if (it != layer_to_clear.end())
+      {
+        ROS_INFO_STREAM("clearing layer --" << name << "--.");
+
+        boost::unique_lock<costmap_2d::Costmap2D::mutex_t> lock_planner(*(costmap->getCostmap()->getMutex()));
+        plugin->reset();
+      }
+    }
+
+    // update map once
+    costmap->updateMap();
+  }
+
+  void SBPLRecovery::prunePlan(const geometry_msgs::PoseStamped& pose, std::vector<geometry_msgs::PoseStamped>& plan)
+  {
+    // find the 1st point of the plan which is prune distance away
+    // (plan should always start from robot pose)
+    unsigned int index;
+    for(index = 0; index < plan_.poses.size(); ++index)
+    {
+      if(sqDistance(pose, plan[index]) > prune_distance_)
+        break;
+    }
+
+    // erase all points until this point
+    plan.erase (plan.begin(),plan.begin()+index);
   }
 };

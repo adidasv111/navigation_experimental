@@ -70,6 +70,9 @@ namespace sbpl_recovery
           const geometry_msgs::PoseStamped& p2);
       std::vector<geometry_msgs::PoseStamped> makePlan();
 
+      void prunePlan(const geometry_msgs::PoseStamped& pose, std::vector<geometry_msgs::PoseStamped>& plan);
+      void clearCostmapLayers(costmap_2d::Costmap2DROS* costmap, std::vector<std::string> layer_to_clear);
+
       costmap_2d::Costmap2DROS* global_costmap_;
       costmap_2d::Costmap2DROS* local_costmap_;
       costmap_2d::Costmap2DROS* recovery_costmap_;
@@ -93,12 +96,17 @@ namespace sbpl_recovery
       nav_msgs::Path plan_;
       double control_frequency_, sq_planning_distance_, controller_patience_;
       double planner_period_;
+      double abort_time_;
       bool replan_;
       int planning_attempts_, attempts_per_run_;
       bool use_local_frame_;
       bool use_recovery_costmap_;
       bool use_pose_follower_;
       bool use_sbpl_planner_;
+      bool clear_recovery_map_;
+      std::vector<std::string> clearable_layers_recovery_costmap_;
+
+      double prune_distance_;
   };
 
 };
