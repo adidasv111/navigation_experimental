@@ -44,10 +44,11 @@
 #include <sbpl_lattice_planner/sbpl_lattice_planner.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Path.h>
+#include <move_base_msgs/MoveBaseActionResult.h>
 #include <boost/thread.hpp>
 #include <base_local_planner/goal_functions.h>
 #include <pluginlib/class_loader.h>
-
+#include <atomic>
 
 namespace sbpl_recovery
 {
@@ -69,9 +70,12 @@ namespace sbpl_recovery
       double sqDistance(const geometry_msgs::PoseStamped& p1,
           const geometry_msgs::PoseStamped& p2);
       std::vector<geometry_msgs::PoseStamped> makePlan();
+      bool getGlobalPose(geometry_msgs::PoseStamped& global_pose);
 
       void prunePlan(const geometry_msgs::PoseStamped& pose, std::vector<geometry_msgs::PoseStamped>& plan);
       void clearCostmapLayers(costmap_2d::Costmap2DROS* costmap, std::vector<std::string> layer_to_clear);
+
+      void goalResultCB(const move_base_msgs::MoveBaseActionResult::ConstPtr& goal_result);
 
       costmap_2d::Costmap2DROS* global_costmap_;
       costmap_2d::Costmap2DROS* local_costmap_;
@@ -97,6 +101,7 @@ namespace sbpl_recovery
       double control_frequency_, sq_planning_distance_, controller_patience_;
       double planner_period_;
       double abort_time_;
+      double sq_abort_distance_;
       bool replan_;
       int planning_attempts_, attempts_per_run_;
       bool use_local_frame_;
@@ -106,7 +111,10 @@ namespace sbpl_recovery
       bool clear_recovery_map_;
       std::vector<std::string> clearable_layers_recovery_costmap_;
 
-      double prune_distance_;
+      double sq_prune_distance_;
+
+      ros::Subscriber goal_sub_;
+      std::atomic_bool received_abort_goal_;
   };
 
 };

@@ -65,9 +65,10 @@ namespace sbpl_recovery
 
     ROS_INFO("SBPLRecovery: Name is %s", n.c_str());
 
-    std::string plan_topic;
+    std::string plan_topic, goal_topic;
     p_nh.param("plan_topic", plan_topic, std::string("NavfnROS/plan"));
-    p_nh.param("control_frequency", control_frequency_, 10.0);
+    p_nh.param("goal_topic", goal_topic, std::string("/move_base/result"));
+    p_nh.param("controller_frequency", control_frequency_, 10.0);
     p_nh.param("controller_patience", controller_patience_, 5.0);
     p_nh.param("planning_attempts", planning_attempts_, 3);
     p_nh.param("attempts_per_run", attempts_per_run_, 3);
@@ -75,7 +76,6 @@ namespace sbpl_recovery
     p_nh.param("use_pose_follower", use_pose_follower_, true);
     p_nh.param("use_sbpl_planner", use_sbpl_planner_, true);
     p_nh.param("use_recovery_costmap", use_recovery_costmap_, false);
-    p_nh.param("prune_distance", prune_distance_, 0.4);
     p_nh.param("abort_time", abort_time_, 30.0);
 
     if (use_recovery_costmap_)
@@ -99,7 +99,8 @@ namespace sbpl_recovery
     }
 
   ROS_INFO_STREAM("plan_topic: --" << plan_topic << "--.");
-  ROS_INFO_STREAM("control_frequency_: --" << control_frequency_ << "--.");
+  ROS_INFO_STREAM("goal_result_topic: --" << goal_topic << "--.");
+  ROS_INFO_STREAM("controller_frequency_: --" << control_frequency_ << "--.");
   ROS_INFO_STREAM("controller_patience_: --" << controller_patience_ << "--.");
   ROS_INFO_STREAM("planning_attempts_: --" << planning_attempts_ << "--.");
   ROS_INFO_STREAM("attempts_per_run_: --" << attempts_per_run_ << "--.");
@@ -108,13 +109,22 @@ namespace sbpl_recovery
   ROS_INFO_STREAM("use_sbpl_planner: --" << use_sbpl_planner_ << "--.");
   ROS_INFO_STREAM("use_recovery_costmap_: --" << use_recovery_costmap_ << "--.");
   ROS_INFO_STREAM("planner_frequency: --" << planner_frequency << "--. period: --" << planner_period_ << "--.");
-  ROS_INFO_STREAM("prune_distance_: --" << prune_distance_ << "--.");
   ROS_INFO_STREAM("abort_time_: --" << abort_time_ << "--.");
 
     double planning_distance;
     p_nh.param("planning_distance", planning_distance, 2.0);
     sq_planning_distance_ = planning_distance * planning_distance;
   ROS_INFO_STREAM("planning_distance: --" << planning_distance << "--.");
+
+    double abort_distance;
+    p_nh.param("abort_distance", abort_distance, 10.0);
+    sq_abort_distance_ = abort_distance * abort_distance;
+  ROS_INFO_STREAM("abort_distance: --" << abort_distance << "--.");
+
+    double prune_distance;
+    p_nh.param("prune_distance", prune_distance, 0.4);
+    sq_prune_distance_ = prune_distance * prune_distance;
+  ROS_INFO_STREAM("prune_distance: --" << prune_distance << "--.");
 
 
     //we need to initialize our costmaps
@@ -215,6 +225,8 @@ namespace sbpl_recovery
 
     ros::NodeHandle node_nh("~/");
     plan_sub_ = node_nh.subscribe<nav_msgs::Path>(plan_topic, 1, boost::bind(&SBPLRecovery::planCB, this, _1));
+    goal_sub_ = node_nh.subscribe<move_base_msgs::MoveBaseActionResult>(goal_topic, 1, boost::bind(&SBPLRecovery::goalResultCB, this, _1));
+
     initialized_ = true;
   }
 
@@ -248,6 +260,13 @@ namespace sbpl_recovery
     }
   }
 
+  void SBPLRecovery::goalResultCB(const move_base_msgs::MoveBaseActionResult::ConstPtr& goal_result)
+  {
+    uint status = goal_result->status.status;
+    if (status == 2 || status == 4 || status == 8 || status == 9)
+      received_abort_goal_.store(true);
+  }
+
   double SBPLRecovery::sqDistance(const geometry_msgs::PoseStamped& p1,
       const geometry_msgs::PoseStamped& p2)
   {
@@ -255,31 +274,69 @@ namespace sbpl_recovery
       (p1.pose.position.y - p2.pose.position.y) * (p1.pose.position.y - p2.pose.position.y);
   }
 
+  bool SBPLRecovery::getGlobalPose(geometry_msgs::PoseStamped& global_pose)
+  {
+    tf::Stamped<tf::Pose> global_pose_tf;
+
+    if(use_local_frame_)
+    {
+      if(!local_costmap_->getRobotPose(global_pose_tf))
+      {
+        ROS_ERROR("SBPL recovery behavior could not get the current pose of the robot. Doing nothing.");
+        return false;
+      }
+    }
+    else
+    {
+      if(!global_costmap_->getRobotPose(global_pose_tf))
+      {
+        ROS_ERROR("SBPL recovery behavior could not get the current pose of the robot. Doing nothing.");
+        return false;
+      }
+    }
+
+    tf::poseStampedTFToMsg(global_pose_tf, global_pose);
+
+    return true;
+  }
+
+
   std::vector<geometry_msgs::PoseStamped> SBPLRecovery::makePlan()
   {
     boost::mutex::scoped_lock l(plan_mutex_);
     std::vector<geometry_msgs::PoseStamped> sbpl_plan;
 
-    tf::Stamped<tf::Pose> global_pose;
-    if(use_local_frame_)
-    {
-      if(!local_costmap_->getRobotPose(global_pose))
-      {
-        ROS_ERROR("SBPL recovery behavior could not get the current pose of the robot. Doing nothing.");
-        return sbpl_plan;
-      }
-    }
-    else
-    {
-      if(!global_costmap_->getRobotPose(global_pose))
-      {
-        ROS_ERROR("SBPL recovery behavior could not get the current pose of the robot. Doing nothing.");
-        return sbpl_plan;
-      }
-    }
-
     geometry_msgs::PoseStamped start;
-    tf::poseStampedTFToMsg(global_pose, start);
+    // tf::Stamped<tf::Pose> global_pose;
+    if (getGlobalPose(start) == false)
+    {
+      return sbpl_plan;
+    }
+    // if(use_local_frame_)
+    // {
+    //   if(!local_costmap_->getRobotPose(global_pose))
+    //   {
+    //     ROS_ERROR("SBPL recovery behavior could not get the current pose of the robot. Doing nothing.");
+    //     return sbpl_plan;
+    //   }
+    // }
+    // else
+    // {
+    //   if(!global_costmap_->getRobotPose(global_pose))
+    //   {
+    //     ROS_ERROR("SBPL recovery behavior could not get the current pose of the robot. Doing nothing.");
+    //     return sbpl_plan;
+    //   }
+    // }
+
+    // geometry_msgs::PoseStamped start;
+    // tf::poseStampedTFToMsg(global_pose, start);
+
+    if(plan_.poses.size() <= 0)
+    {
+      ROS_ERROR("SBPL recovery got an empty reference path");
+      return sbpl_plan;
+    }
 
     //first, we want to walk far enough along the path that we get to a point
     //that is within the recovery distance from the robot. Otherwise, we might
@@ -297,6 +354,12 @@ namespace sbpl_recovery
     if (index >= plan_.poses.size())
       index = plan_.poses.size() - 1;
 
+    if (index < 0)
+    {
+      ROS_ERROR("sbpl recovery: negative index!");
+      return sbpl_plan;
+    }
+
     //next, we want to find a goal point that is far enough away from the robot on the
     //original plan and attempt to plan to it
     int unsuccessful_attempts = 0;
@@ -312,10 +375,10 @@ namespace sbpl_recovery
       {
         ROS_INFO("Calling sbpl planner with start (%.2f, %.2f), goal (%.2f, %.2f)",
             start.pose.position.x, start.pose.position.y,
-            plan_.poses[i].pose.position.x,
-            plan_.poses[i].pose.position.y);
-            // plan_.poses.back().pose.position.x,
-            // plan_.poses.back().pose.position.y);
+            //plan_.poses[i].pose.position.x,
+            //plan_.poses[i].pose.position.y);
+            plan_.poses.back().pose.position.x,
+            plan_.poses.back().pose.position.y);
 
         {
           // we need to lock the map when we plan
@@ -326,8 +389,9 @@ namespace sbpl_recovery
             map_mutex = global_costmap_->getCostmap()->getMutex();
 
           boost::unique_lock<costmap_2d::Costmap2D::mutex_t> lock(*(map_mutex));
-          if (planner_->makePlan(start, plan_.poses[i], sbpl_plan) && !sbpl_plan.empty())
-          // if (planner_->makePlan(start, plan_.poses.back(), sbpl_plan) && !sbpl_plan.empty())
+
+//          if (planner_->makePlan(start, plan_.poses[i], sbpl_plan) && !sbpl_plan.empty())
+          if (planner_->makePlan(start, plan_.poses.back(), sbpl_plan) && !sbpl_plan.empty())
           {
             prunePlan(start, sbpl_plan);
             ROS_INFO("Got a valid plan");
@@ -355,14 +419,24 @@ namespace sbpl_recovery
     }
 
     ROS_INFO("Starting the sbpl recovery behavior");
+    received_abort_goal_.store(false);
 
-    clearCostmapLayers(recovery_costmap_,  clearable_layers_recovery_costmap_);
+    if (clear_recovery_map_)
+      clearCostmapLayers(recovery_costmap_,  clearable_layers_recovery_costmap_);
 
     ros::Time start_time = ros::Time::now();
 
     for(int i=0; i < planning_attempts_; ++i)
     {
-    ROS_INFO_STREAM("planning attempt " << i);
+      geometry_msgs::PoseStamped start_pose;
+      geometry_msgs::PoseStamped current_pose;
+      if (getGlobalPose(start_pose) == false)
+      {
+        ROS_ERROR("SBPLRecovery::runBehavior failed to get start pose");
+        return;
+      }
+
+      // plan first time
       std::vector<geometry_msgs::PoseStamped> sbpl_plan = makePlan();
 
       if(sbpl_plan.empty())
@@ -374,13 +448,27 @@ namespace sbpl_recovery
 
       //ok... now we've got a plan so we need to try to follow it
       controller_->setPlan(sbpl_plan);
+
       ros::Rate r(control_frequency_);
+
       ros::Time last_valid_control = ros::Time::now();
+      bool abort_distance_reached = false;
+
       while(ros::ok() &&
           last_valid_control + ros::Duration(controller_patience_) >= ros::Time::now() &&
           !controller_->isGoalReached() &&
-          start_time + ros::Duration(abort_time_) >= ros::Time::now())
+          start_time + ros::Duration(abort_time_) >= ros::Time::now() &&
+          abort_distance_reached == false &&
+          received_abort_goal_.load() != true)
       {
+        if (getGlobalPose(current_pose) == false)
+        {
+          ROS_ERROR("SBPLRecovery::runBehavior failed to get current pose");
+          return;
+        }
+        if(sqDistance(start_pose, current_pose) > sq_abort_distance_)
+          abort_distance_reached = true;
+
         if (replan_ && (last_valid_plan + ros::Duration(planner_period_) < ros::Time::now()))
         {
           sbpl_plan = makePlan();
@@ -406,7 +494,7 @@ namespace sbpl_recovery
       else
         ROS_WARN("The sbpl recovery behavior failed to make it to its desired goal");
     }
-  }
+}
 
   void SBPLRecovery::clearCostmapLayers(costmap_2d::Costmap2DROS* costmap, std::vector<std::string> layer_to_clear)
   {
@@ -439,14 +527,26 @@ namespace sbpl_recovery
   {
     // find the 1st point of the plan which is prune distance away
     // (plan should always start from robot pose)
-    unsigned int index;
-    for(index = 0; index < plan_.poses.size(); ++index)
+    unsigned int index = 0;
+    for(index = 0; index < plan.size(); ++index)
     {
-      if(sqDistance(pose, plan[index]) > prune_distance_)
+      if(sqDistance(pose, plan[index]) > sq_prune_distance_)
         break;
     }
 
+    if (index >= plan.size())
+    {
+      ROS_WARN("sbpl recovery: prune plan: didn't find any points outside prune distance. don't prune");
+      return;
+    }
+
+    if (index <= 0)
+    {
+      ROS_WARN("sbpl recovery: prune plan: negative index! don't prune");
+      return;
+    }
+
     // erase all points until this point
-    plan.erase (plan.begin(),plan.begin()+index);
+    plan.erase(plan.begin(),plan.begin()+index);
   }
 };
